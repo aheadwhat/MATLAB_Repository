@@ -1,0 +1,76 @@
+function [X, Y]= make_circles(n_samples, shuffle, noise, random_state,factor)
+ %%% Make a large circle containing a smaller circle in 2d
+    
+%     Parameters
+%     ----------
+%     n_samples : int, optional (default=200)
+%         The total number of points generated.
+%     shuffle : bool, optional (default=true)
+%         Whether to shuffle the samples.
+%     noise : double or false (default= false)
+%         Standard deviation of Gaussian noise added to the data.
+%     random_state : int, or false (default= false)
+%         If int, random_state is the seed used by the random number generator;
+%     factor : double < 1 (default=.8)
+%         Scale factor between inner and outer circle.
+%     Returns
+%     -------
+%     X : array of shape [n_samples, 2]
+%         The generated samples.
+%     y : array of shape [n_samples]
+%         The integer labels (-1 or 1) for class membership of each sample.
+    if nargin < 1
+        n_samples = 200;
+    end
+    if nargin < 2
+        shuffle = true;
+    end
+    if nargin < 3
+        noise = false;
+    end
+    if nargin < 4
+        random_state = false;
+    end  
+    if nargin < 5
+        factor = 0.8;
+    end
+    
+
+    if factor > 1 || factor < 0
+        error("'factor' has to be between 0 and 1.")
+    end
+
+    
+    if random_state
+        rng(random_state);
+    end
+    
+    avg_samples = floor(n_samples / 2); % average number of every class
+    
+    
+    vec = linspace(0, 2 * pi, avg_samples + 1); %last one is replicated, need to remove it
+    vec = vec(1 : end - 1);
+    outer_circ_x = cos(vec);
+    outer_circ_y = sin(vec);
+    inner_circ_x = outer_circ_x * factor;
+    inner_circ_y = outer_circ_y * factor;
+    
+    X = [outer_circ_x, inner_circ_x; outer_circ_y, inner_circ_y]';
+    
+    Y = [ones(avg_samples,1); -1 * ones(avg_samples,1)];
+    
+    if shuffle
+        rind = randperm(n_samples);
+        X = X(rind,:);
+        Y = Y(rind);
+    end
+
+    if noise 
+        disp('generate noisy data');
+        X = X + noise * randn(size(X));
+    end
+
+    
+end
+ 
+    
