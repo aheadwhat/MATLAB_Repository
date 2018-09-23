@@ -1,0 +1,31 @@
+function [f, f_cmn] = GFHF(W, y, lb_idx)
+    
+  % y is a class vector with binary elements (1, -1)
+   
+  L = diag(sum(W,2))-W; % L is the graph laplacian
+
+  n = length(y);
+  ul_idx = setdiff(1:n,lb_idx);
+  
+  Y_lb = bsxfun(@(x,y)x==y,y(lb_idx),[1,-1]); % map y to be a matrix, where columns denote the classes
+  
+
+  F_ul = - L(ul_idx,ul_idx) \ (L(ul_idx,lb_idx)*Y_lb);
+  f = zeros(n,1); % a predicted class vector without cmn
+  f_cmn = zeros(n,1); % a predicted class vector with cmn
+  f(lb_idx) = y(lb_idx);
+  f(ul_idx) = F_ul(:,1) - F_ul(:,2); % the sign will decide which class is preferred
+
+  
+  if any(sum(F_ul)==0)
+      F_ul_cmn = F_ul;
+  else
+      q = sum(Y_lb)+1; % with laplace smoothing
+      F_ul_cmn = F_ul.*repmat(q./sum(F_ul),length(ul_idx),1);
+  end
+  
+  
+  f_cmn(lb_idx) = y(lb_idx);
+  f_cmn(ul_idx) = F_ul_cmn(:,1) - F_ul_cmn(:,2);
+ 
+end
