@@ -1,0 +1,188 @@
+function [f, mu] = SMGIG_PM(L, y, G, beta, gamma, mu_0, f_0, maxIter, tol)
+% PM denotes penalty method
+% extend SMGI method with group norm
+% solved by PALM and the 'mu' iteration is solved by explicit expressions
+%
+% Parameter
+% ------------
+% INPUT:
+%      L: cell array
+%         graph-related matrices
+%      y: nx1 vector
+%         initial label vector
+%      G: cell array, e.g. {[1,3,5], [2, 4]}
+%         indicates the group(no overlap) setting
+%      beta: positive scalar
+%         control the effect of global label fitness
+%      gamma: positive scalar
+%         penalty term coef
+%      mu_0: Px1 vector
+%         initial value for mu 
+%      f_0: nx1 vector
+%         intial vector for f
+%      maxIter: positive scalar
+%         upper bound for iterating times
+%      tol: positive scalar
+%         precision control
+%-----------
+%OUPUT:
+%      mu: Px1 vector
+%         weights for every sources
+%      f: nx1 vector
+%         the weighted prediction for labels
+% .     
+if nargin < 2
+    error('a cell array of graph matrix and a labled vector are both needed!');
+end
+
+P = size(L,2); % #(graph laplacians)
+
+if nargin < 3 || isempty(G)
+    disp('use default group partitions')
+    G = num2cell(1:P);
+end
+
+if nargin < 4 || isempty(beta)
+    beta = 0.1;
+end
+
+if nargin < 5 || isempty(gamma)
+    gamma = 0.5;
+end
+
+if nargin < 6 || isempty(mu_0)
+    mu_0 = zeros(P,1) + 1/P;   % initialize the mu_0
+end
+
+if nargin < 7 || isempty(f_0)
+    f_0 = y;
+end
+
+if nargin < 8 || isempty(maxIter)
+    maxIter = 1000;  %upper bound of big loops
+end
+
+if nargin < 9 || isempty(tol)
+    tol = 1e-6; % for PALM
+end
+
+if size(y, 2) ~= 1 
+    error('y is invalid, it should be a nx1 vector');
+end
+
+
+n = size(L{1},1); % #(samples)
+ng = size(G,2); % #(groups)
+
+% initialization
+mu = mu_0;
+f = f_0;
+
+tol_mu = sqrt(P) * tol;
+tol_f = sqrt(n) * tol;
+gamma_f = 1.1;
+gamma_mu = 1.1;
+lambda_1 = 0; % alm one-order coef, always keep zero for the penalty method
+lambda_2 = 5; % alm quadratic penalty coef, initialization
+maxInLoop = 20000; % maximum iterating times for inner loop 
+
+
+
+% need to use useful init,,,
+
+% mu_pre = inf(P,1);
+% f_pre = inf(P,1);
+
+%
+for outLoop = 1:maxIter
+
+    mu_pre_in = mu;
+    f_pre_in = f;
+    
+    
+    for inLoop = 1:maxInLoop
+        
+        wL = zeros(n);
+        for k = 1:P
+            wL = wL + L{k}.*mu(k);
+        end
+        
+        Lp_f = 2 * gamma_f * norm(wL) + 0.1;
+        
+        z = f - 1/Lp_f * gradHF(wL,f);
+        f = 1/(Lp_f + 2 * beta) .* (2 * beta * y + Lp_f * z);
+        
+        Lp_mu = gamma_mu * P * lambda_2;
+        
+        z = mu - 1/Lp_mu * gradHMu(L, mu, f, lambda_1, lambda_2, P);
+        z(z < 0) = 0;
+        % group inspection
+        for ig = 1 : ng
+            g = G{ig};
+            if norm(z(g)) > gamma/Lp_mu
+                mu(g) = (1 - gamma/(Lp_mu * norm(z(g)))) .* z(g);
+            else
+        
+                mu(g) = zeros(size(mu(g)));
+            end
+        end
+
+
+         if inLoop == maxInLoop
+             disp('inner loop achieves maxiter')
+             disp('mu out max:')
+             fprintf('%1.9f \n',norm(mu-mu_pre_in));
+             fprintf('%1.9f \n',norm(f - f_pre_in));
+             disp(mu(1:9));
+         end
+         
+%         if abs(max(mu - mu_pre_in)) < tol && abs(max((f_pre_in - f))) < tol
+        if norm(mu - mu_pre_in) < tol_mu && norm(f_pre_in - f) < tol_f
+            fprintf('out after %i inner iterations \n', inLoop);
+            break;
+        else
+            mu_pre_in = mu;
+            f_pre_in = f;
+   
+        end
+       
+
+        
+        if inLoop == maxInLoop
+            disp('inner loop achieves maxiter');
+        end
+        
+    end
+    
+    
+%     if norm(mu - mu_pre) < 0.1 * tol_mu && norm(f_pre - f) < 0.1* tol_f
+%     if 1/2 * lambda_2 * (sum(mu) - 1)^2 < tol * 0.01
+    if abs(sum(mu) - 1) < 1e-8
+        fprintf('stopped after %f big loops \n', outLoop);
+        break
+%     else
+%         mu_pre = mu;
+%         f_pre = f;
+    end
+    
+    % ALM update
+%     lambda_1 = lambda_1 + lambda_2 * (sum(mu) - 1); % not needed for
+%     penalty method
+    lambda_2 = 5 * lambda_2;
+    
+      
+end
+
+
+
+end
+
+function gf = gradHF(wL, f)
+    gf = 2 .* wL * f;   
+end
+
+function gmu = gradHMu(L, mu, f, lambda_1, lambda_2, P)
+    ov = ones(P,1);
+    vec_f = arrayfun(@(k)f'*L{k}*f,1:P);
+    gmu = vec_f' + lambda_1 * ov + lambda_2 * (sum(mu) - 1) * ov;
+end
