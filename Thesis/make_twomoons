@@ -1,0 +1,65 @@
+function [X, Y] = make_twomoons(n_samples, shuffle, noise, random_state)
+ %%% Make two moons (interleaving half circles) in 2d
+    
+%     Parameters
+%     ----------
+%     n_samples : int, optional (default=200)
+%         The total number of points generated.
+%     shuffle : bool, optional (default=true)
+%         Whether to shuffle the samples.
+%     noise : double or false (default= false)
+%         Standard deviation of Gaussian noise added to the data.
+%     random_state : int, or false (default= false)
+%         If int, random_state is the seed used by the random number generator;
+%     Returns
+%     -------
+%     X : array of shape [n_samples, 2]
+%         The generated samples.
+%     y : array of shape [n_samples]
+%         The integer labels (-1 or 1) for class membership of each sample.
+    if nargin < 1
+        n_samples = 1000;
+    end
+    if nargin < 2
+        shuffle = true;
+    end
+    if nargin < 3
+        noise = false;
+    end
+    if nargin < 4
+        random_state = false;
+    end  
+
+    
+    if random_state
+        rng(random_state);
+    end
+    
+    n_samples_out = floor(n_samples/2);
+    n_samples_in = n_samples - n_samples_out;
+    
+    outer_circ_x = cos(linspace(0, pi, n_samples_out));
+    outer_circ_y = sin(linspace(0, pi, n_samples_out));
+    inner_circ_x = 1 - cos(linspace(0, pi, n_samples_in));
+    inner_circ_y = 1 - sin(linspace(0, pi, n_samples_in)) - .5;
+    
+    
+    X = [outer_circ_x, inner_circ_x; outer_circ_y, inner_circ_y]';
+    
+    Y = [ones(n_samples_out,1);-1 * ones(n_samples_in,1)];
+    
+    if shuffle
+        rind = randperm(n_samples);
+        X = X(rind,:);
+        Y = Y(rind);
+    end
+
+    if noise 
+        disp('generate noisy data');
+        X = X + noise * randn(size(X));
+    end
+
+    
+end
+ 
+
