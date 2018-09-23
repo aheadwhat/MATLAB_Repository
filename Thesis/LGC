@@ -1,0 +1,17 @@
+function f = LGC(W,y,lb_idx,alpha)
+    
+% for our setting, y is a binary class vector (+1, -1)
+
+n = size(W,1);
+ul_idx = setdiff(1:n, lb_idx);
+
+y(ul_idx) = 0;
+
+Y = bsxfun(@(x,y)x==y,y,[1,-1]);
+M = diag(1./sqrt(sum(W,2)));
+S = M*W*M;
+F = (eye(n)-alpha*S)\Y;
+f = (F(:,1)-F(:,2))./(F(:,1)+F(:,2));
+
+
+end
