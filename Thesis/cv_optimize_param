@@ -1,0 +1,554 @@
+function cv_optimize_param
+
+% attention: data, y(-1,1,0), train_set
+% use this cv procedure to optimize the hyperparamers
+% so only the labeled ones should be used to perform the evaluation, not
+% the oracle!
+% and some not related codes are translated into this scripts
+
+% for simulated dataset: 
+% twomoons, twocircles, twospirals
+
+%% senario:
+% for simulated dataset
+clf;
+
+rng(1,'twister');
+
+% %%============================SETTING I==================================
+
+dataname = 'twocircles';
+CV=5;             %%We take 5-fold crossvalidation
+lb_rate = 0.1;    % labeled rate
+noiselevel = 0.06; % 0.03,0.06, noiselevel for twocircle dataset
+ngraph_r = 9;     % #(related graphs)
+ngraph_n_1 = 15;  % #(noisy graphs by randomly generating)
+ngraph_n_2 = 15;  % $(noisy graphs based on shuffled data)
+ngraph = ngraph_n_1 + ngraph_n_2 + ngraph_r;      % #(all graphs)
+isrescaled = true; % indicate whether to normalize the graph laplacian or not
+[data, y] = make_circles(400,true,noiselevel,1); % load data, seed is set to 1
+
+    colormap([0.2422 0.1504 0.6603; %purple
+        0 0.5000 0.4000]) %green
+    scatter(data(:,1),data(:,2),12,y);
+% % %     hold on;
+
+% %%==========================SETTING I END================================
+% %%===========================SETTING II==================================
+
+% dataname = 'twomoons';
+% CV=5;             %%We take 5-fold crossvalidation
+% lb_rate = 0.1;    % labeled rate
+% noiselevel = 0.1; % 0.1,0.2, noiselevel for twocircle dataset
+% ngraph_r = 9;     % #(related graphs)
+% ngraph_n_1 = 15;  % #(noisy graphs by randomly generating)
+% ngraph_n_2 = 15;  % $(noisy graphs based on shuffled data)
+% ngraph = ngraph_n_1 + ngraph_n_2 + ngraph_r;      % #(all graphs)
+% isrescaled = true; % indicate whether to normalize the graph laplacian or not
+% [data, y] = make_twomoons(400,true,noiselevel,1); % load data, seed is set to 1
+% 
+%     colormap([0.2422 0.1504 0.6603; %purple
+%         0 0.5000 0.4000]) %green
+%     scatter(data(:,1),data(:,2),12,y);
+% % %     hold on;
+
+% %%=========================SETTING II END==============================
+% %%===========================SETTING III==================================
+
+% dataname = 'twospirals';
+% CV=5;             %%We take 5-fold crossvalidation
+% lb_rate = 0.1;    % labeled rate
+% noiselevel = 2; % 1,2, noiselevel for twocircle dataset
+% ngraph_r = 9;     % #(related graphs)
+% ngraph_n_1 = 15;  % #(noisy graphs by randomly generating)
+% ngraph_n_2 = 15;  % $(noisy graphs based on shuffled data)
+% ngraph = ngraph_n_1 + ngraph_n_2 + ngraph_r;      % #(all graphs)
+% isrescaled = true; % indicate whether to normalize the graph laplacian or not
+% % %%% usage: make_twospirals(n_samples, noise, degrees, start, shuffle, random_state)
+% % load data, seed is set to 1
+% [data, y] = make_twospirals(400,noiselevel,[],[],[],1); 
+% 
+% colormap([0.2422 0.1504 0.6603; %purple
+%     0 0.5000 0.4000]) %green
+% scatter(data(:,1),data(:,2),15,y);
+% % %     hold on;
+%
+% %%=========================SETTING III END==============================
+
+
+% graph construction
+% [L, W] = distMat(data, dist, param, knn,rescale,Ltype)
+% relative graphs
+clear L W;
+[L{1},W{1}] = distMat(data, 'gaussian', 0.1, 3, isrescaled);
+[L{2},W{2}] = distMat(data, 'gaussian', 0.1, 5, isrescaled);
+[L{3},W{3}] = distMat(data, 'gaussian', 0.1, 7, isrescaled);
+[L{4},W{4}] = distMat(data, 'gaussian', 1, 3, isrescaled);
+[L{5},W{5}] = distMat(data, 'gaussian', 1, 5, isrescaled);
+[L{6},W{6}] = distMat(data, 'gaussian', 1, 7, isrescaled);
+[L{7},W{7}] = distMat(data, 'gaussian', 10, 3, isrescaled);
+[L{8},W{8}] = distMat(data, 'gaussian', 10, 5, isrescaled);
+[L{9},W{9}] = distMat(data, 'gaussian', 10, 7, isrescaled);
+
+if size(L,2) ~= ngraph_r
+    error('please check the related graph you ve input');
+end
+
+if isrescaled
+    disp('the output graph laplacians are rescaled');
+else
+    disp('the rescaling operation is not carried out');
+end
+
+
+
+n = size(data, 1);
+% irrelatvie graphs
+% usage: [L,W] = noisygraph(data, gType, dist, knn,isrescaled,seed)
+% type I: random noise version
+for i = (ngraph_r + 1) : (ngraph_r + ngraph_n_1)
+    rW = rand(n,n);
+    rW = (rW + rW')./2;
+    rW(eye(n) == 1) = 0; % for lgc type
+    W{i} = rW;
+    D = diag(1./sqrt(sum(rW,2)));
+    L{i} = eye(n) - D*rW*D;
+    if isrescaled
+        L{i} = L{i}/norm(L{i}, 'fro');
+    end
+end
+% type II: create knn graphs on shuffled data
+for i = (ngraph_r + ngraph_n_1 + 1) : ngraph
+   tmp_idx = randperm(n);
+   [L{i},W{i}] = distMat(data(tmp_idx,:), 'euclidean', [], 5, isrescaled);    
+end
+
+
+relevantInd = [ones(1,ngraph_r), -1*ones(1,ngraph - ngraph_r)];
+%%
+% %%
+%  temp test
+% Y = y(y ~= 0);
+% YY = Y * Y';
+% cY = sqrt(sum(sum(YY .* YY)));
+% Wt1 =W{1}/norm(W{1},'fro');
+% Wt2 = W{27}/norm(W{28},'fro');
+% Wt1 = Wt1(y~=0, y~=0);
+% Wt2 = Wt2(y~=0, y~=0);
+% sum(sum(Wt1 .* YY)) / sqrt(sum(sum(Wt1.*Wt1)))/cY
+% sum(sum(Wt2 .* YY)) / sqrt(sum(sum(Wt2.*Wt2)))/cY
+% %%
+
+
+% % randomly choose pre-defined percentage of labels to be seen
+% Y = y; % vector
+% n = length(y);
+% lb_idx = randperm(length(y));
+% % #labels ....
+% lb_idx = lb_idx(1:round(n*lb_rate));
+% ul_idx = setdiff(1:n, lb_idx);
+% Y(ul_idx) = 0;
+% lb_idx_1 = find(Y>0);
+% lb_idx_2 = find(Y<0);
+
+rng(100,'twister'); % for reproducity
+y_tmp1 = find(y > 0);
+y_tmp2 = find(y < 0);
+n1 = length(y_tmp1);
+n2 = length(y_tmp2);
+lb_idx_1 = randperm(n1);
+lb_idx_1 = lb_idx_1(1:round(n1*lb_rate));
+lb_idx_2 = randperm(n2);
+lb_idx_2 = lb_idx_2(1:round(n2*lb_rate));
+lb_idx = [lb_idx_1,lb_idx_2];
+ul_idx = setdiff(1:n, lb_idx);
+Y = y; % vector
+Y(ul_idx) = 0;   
+
+
+%     %these codes doesn't consider the class ratio
+%     nlb = length(lb_idx);
+%     size_of_CV = round(nlb/CV);    
+%     rand_idx = randperm(nlb);
+
+% to avoid imbalance, use stratified sampling here
+rand_idx_1 = randperm(length(lb_idx_1));
+rand_idx_2 = randperm(length(lb_idx_2));
+k1 = length(rand_idx_1);
+k2 = length(rand_idx_2);
+size_of_cv_1 = round(k1/CV);
+size_of_cv_2 = round(k2/CV);
+if size_of_cv_1 ==0 || size_of_cv_2 == 0
+    error('the size of labeled data is not enough');
+end
+    
+    
+    
+% var to record the cv search results
+% parameter selection
+
+
+param = [0.05, 0.1,0.15,0.2]; % range of beta
+npar = length(param);
+
+func = 'mgk';
+regularize = false; % for 'mania'
+
+if strcmp(func, 'mgs')
+    param_g = [0.01,0.1,0.2,0.3,0.5,1]; % gamma for mgs
+     
+elseif strcmp(func, 'mgk')
+    param_g = linspace(0.02,0.2,10); % gamma for mgk
+    
+elseif strcmp(func, 'mania')
+    if regularize 
+        param_g = [0.01,0.1,0.5,1,5,10,50,100]; % gamma for genemania
+    else
+        param_g = 0; % gamma plays no role
+    end
+elseif strcmp(func, 'lead')
+    % temporarily no parameter tuning is needed
+    
+elseif strcmp(func, 'mgf')
+    warning('do not support yet');
+    
+    %     Heuristic, tune by some specific ratio
+    %     param_a = [1/5, 1/2, 1, 2, 5, 10];
+    %     param_b = [0.1,0.3,0.5,0.7,1]; % ratio: beta/alpha, only for mgf, mgg
+    %     param_g = [1/5, 1/2, 1, 5, 10]; % ratio: gamma/beta, had better not lower than 1 for mgf
+    %     npar_g = length(param_g);
+    %     npar_b = length(param_b);
+    %     if npar_b ~= npar_g
+    %         error('be cautious! which function are you testing? L1?')
+    %     end   
+    
+end
+
+npar_g = length(param_g);
+
+if strcmp(func, 'mgs') || strcmp(func, 'mania')
+    aucResults = zeros(1,npar, npar_g);  %create npar_g views
+    weightResults = zeros(npar,ngraph, npar_g); % only the final fold
+    errResults = zeros(2,npar, npar_g);  %2 rows in each view (acc; auc)
+    errResults_o = zeros(2,npar,npar_g); %2 rows in each view (acc; auc)
+elseif strcmp(func, 'mgk') 
+    % Weight computing and label prediction of 'mgk' is handled seperately
+    % to save useless computations in this program, so slightly different.
+    aucResults = zeros(1, npar_g);  % 
+    weightResults = zeros(npar_g,ngraph); % only the final fold
+    errResults = zeros(2,npar, npar_g);  %2 rows in each view (acc; auc)
+    errResults_o = zeros(2,npar,npar_g); %2 rows in each view (acc; auc) 
+else
+    % for tune-free methods, record the average result
+    aucResults = 0;
+    weightResults = zeros(1, ngraph); % only final fold
+    errResults = zeros(1,2);   %(acc, auc)
+    errResults_o = zeros(1,2); %(acc, auc)
+end
+
+
+
+
+
+for k = 1:CV
+    fprintf('begin to implement the cross validation:round =%d/%d\n', k, CV);
+     if (k~=CV) %% We allocate all the interaction elements into 5 parts
+        test_idx = lb_idx_1(rand_idx_1((size_of_cv_1*(k-1)+1):(size_of_cv_1*k)));
+        test_idx = [test_idx, lb_idx_2(rand_idx_2((size_of_cv_2*(k-1)+1):(size_of_cv_2*k)))];
+    else
+        test_idx = lb_idx_1(rand_idx_1((size_of_cv_1*(k-1)+1):end));
+        test_idx = [test_idx, lb_idx_2(rand_idx_2((size_of_cv_2*(k-1)+1):end))];
+        
+    end
+    
+    Y_test = Y;           
+    Y_test(test_idx) = 0; % vector for training fold 
+    y_test = y(test_idx); % vector for the testing fold
+    y_ul = y(ul_idx);
+    
+    
+    if strcmp(func, 'mgs')
+        %  %%% usage:  [f, mu] = MGSP(L,y,beta, gamma,maxIter, tol)
+        
+        for p = 1:npar
+            for q = 1:npar_g
+                [f, mu] = MGSP(L, Y_test, param(p),param_g(q));
+                
+                f_test = f(test_idx);
+                f_ul = f(ul_idx);
+                 
+                aucResults(1,p,q) = aucResults(1, p,q) + modifiedAUC(mu, relevantInd);
+                errResults(1, p,q) = errResults(1, p,q) + acc_eval(y_test,f_test);
+                errResults_o(1,p,q) = errResults_o(1,p,q) + acc_eval(y_ul,f_ul);
+                [~,~,~,auc] = perfcurve(y_test,f_test,1);
+                [~,~,~,auc_o] = perfcurve(y_ul,f_ul,1);
+                errResults(2, p,q) = errResults(2,p,q) + auc;
+                errResults_o(2, p,q) = errResults_o(2,p,q) + auc_o;
+                weightResults(p, :,q) = mu;
+            end
+        end
+       
+        
+    elseif strcmp(func, 'mgk')
+    
+        for q = 1:npar_g
+            % fixed the graph and scan the best beta for label propagation
+            % %%% usage:  [f, mu, wL] = TAMGI(W, y, beta, gamma, rescale, cost)
+            [~, mu, wL] = TAMGI(W,Y_test,[],param_g(q), true); % here beta is not necessary
+  
+            aucResults(1, q) = aucResults(1, q) + modifiedAUC(mu, relevantInd); % mu is irrelated to beta
+            weightResults(q,:) = mu; % p is irrelated
+            
+            for p = 1:npar
+                %%% usage: f = lgcLP(wL,y,beta)
+                f = lgcLP(wL, Y_test, param(p));
+                f_test = f(test_idx);
+                f_ul = f(ul_idx);
+                
+                errResults(1, p,q) = errResults(1, p,q) + acc_eval(y_test,f_test);
+                errResults_o(1,p,q) = errResults_o(1, p,q) + acc_eval(y_ul,f_ul);
+                [~,~,~,auc] = perfcurve(y_test,f_test,1);
+                [~,~,~,auc_o] = perfcurve(y_ul,f_ul,1);
+                %             auc = AUC(y_test,f_test);
+                %             auc_o = AUC(y_ul, f_ul);
+                errResults(2, p,q) = errResults(2,p,q) + auc;
+                errResults_o(2, p,q) = errResults_o(2,p,q) + auc_o;
+                
+            end
+        end  
+    
+        
+    elseif strcmp(func, 'mania')
+        
+        % %%% usage:  [f, mu] = GeneMANIA(W,y,beta, gamma, rescale, regularize)
+        
+        for p = 1:npar
+            for q = 1:npar_g
+                
+                [f, mu] = GeneMANIA(W, Y_test, param(p),param_g(q),true, regularize);
+                f_test = f(test_idx);
+                f_ul = f(ul_idx);
+                
+      
+                aucResults(1,p,q) = aucResults(1, p,q) + modifiedAUC(mu, relevantInd);
+                errResults(1, p,q) = errResults(1, p,q) + acc_eval(y_test,f_test);
+                errResults_o(1,p,q) = errResults_o(1,p,q) + acc_eval(y_ul,f_ul);
+                [~,~,~,auc] = perfcurve(y_test,f_test,1);
+                [~,~,~,auc_o] = perfcurve(y_ul,f_ul,1);
+                errResults(2, p,q) = errResults(2,p,q) + auc;
+                errResults_o(2, p,q) = errResults_o(2,p,q) + auc_o;
+                weightResults(p, :,q) = mu;
+            end
+        end
+        
+
+        
+    elseif strcmp(func, 'lead')
+        
+        % %%% usage: [f, mu] = myLEAD(W,y,dis,C1, C2, rescale)
+        
+        dis = squareform(pdist(data, 'euclidean'));  % cruial to myLead (for KNN)
+        [f, mu] = myLEAD(W, Y_test,dis);
+        f_test = f(test_idx);
+        f_ul = f(ul_idx);
+        
+  
+        aucResults = aucResults + modifiedAUC(mu, relevantInd);
+        errResults(1) = errResults(1) + acc_eval(y_test,f_test);
+        errResults_o(1) = errResults_o(1) + acc_eval(y_ul,f_ul);
+        [~,~,~,auc] = perfcurve(y_test,f_test,1);
+        [~,~,~,auc_o] = perfcurve(y_ul,f_ul,1);
+        errResults(2) = errResults(2) + auc;
+        errResults_o(2) = errResults_o(2) + auc_o;
+        weightResults = mu;
+   
+        
+    else
+        error('Not support this function yet!');
+    end
+    
+    
+    
+end
+disp(strcat(dataname,num2str(noiselevel),'lbr',num2str(lb_rate)));
+errResults=errResults/CV
+% errResults_o = errResults_o/CV
+weightResults;
+aucResults = aucResults/CV
+
+% save(strcat(dataname,num2str(noiselevel),'CV_lbr',num2str(lb_rate),'.mat'), 'errResults', 'aucResults', 'weightResults');
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%    
+
+
+
+end
+
+
+
+    
+
+% % %% more classification evaluation metrics
+% % function [sen,spec,precision,accuracy,f1]=classification_metric(real_label,predict_label) %%label the elements
+% %     tp_index=find(real_label==1 & predict_label==1);
+% %     tp=size(tp_index,1);
+% % 
+% %     tn_index=find(real_label==0 & predict_label==0);
+% %     tn=size(tn_index,1);
+% % 
+% %     fp_index=find(real_label==0 & predict_label==1);
+% %     fp=size(fp_index,1);
+% % 
+% %     fn_index=find(real_label==1 & predict_label==0);
+% %     fn=size(fn_index,1);
+% % 
+% %     accuracy=(tn+tp)/(tn+tp+fn+fp);
+% %     sen=tp/(tp+fn);
+% %     recall=sen;
+% %     spec=tn/(tn+fp);
+% %     precision=tp/(tp+fp);
+% %     f1=2*recall*precision/(recall+precision);
+% % end
+function acc = acc_eval(real_label,scores, threshold)
+    if nargin < 3
+        threshold = 0;
+    end
+    scores(scores >= threshold) = 1;
+    scores(scores < threshold ) = -1;
+    acc = mean(scores ~= real_label);
+end
+
+function mauc = modifiedAUC(pred_label, real_label)
+    % for graph selection experiment
+    % pred_label: the graph weights
+    % real_label: the label indicating whether the graph is relevant or not
+    n = length(real_label);
+    idx_1 = find(real_label == 1);
+    idx_2 = setdiff(1:n, idx_1);
+    k1 = length(idx_1);
+    k2 = n - k1;
+    
+    W0 = sum(pred_label(idx_1) == 0) * sum(pred_label(idx_2) == 0);
+    W = repmat(reshape(pred_label(idx_1),[],1),1,k2) - repmat(reshape(pred_label(idx_2),1,[]), k1,1);
+    mauc = (sum(sum(W > 0)) + W0)/(k1 * k2);
+
+        
+end
+
+
+function f = lgcLP(wL,y,beta)
+    % wL is normalized graph laplacian
+    % for MGLvKTA, use weighted version
+    n = size(wL,2);
+    f = beta.*((beta * eye(n) + wL)\y);
+end
+
+% 
+% function area=AUC(real,predict) %%calculate the value of AUC
+%     max_value=max(predict);
+%     min_value=min(predict);
+%     threshold=min_value+(max_value-min_value)*(1:999)/1000;
+%     threshold=threshold';
+%     threshold_num=length(threshold);
+%     tn=zeros(threshold_num,1);
+%     tp=zeros(threshold_num,1);
+%     fn=zeros(threshold_num,1);
+%     fp=zeros(threshold_num,1);
+%     for i=1:threshold_num
+%         tp_index=logical(predict>=threshold(i) & real==1);
+%         tp(i,1)=sum(tp_index);
+% 
+%         tn_index=logical(predict<threshold(i) & real==-1);
+%         tn(i,1)=sum(tn_index);
+% 
+%         fp_index=logical(predict>=threshold(i) & real==-1);
+%         fp(i,1)=sum(fp_index);
+% 
+%         fn_index=logical(predict<threshold(i) & real==1);
+%         fn(i,1)=sum(fn_index);
+%     end
+% 
+%     sen=tp./(tp+fn);
+%     spe=tn./(tn+fp);
+%     y=sen;
+%     x=1-spe;
+%     [x,index]=sort(x);
+%     y=y(index,:);
+%     [y,index]=sort(y);
+%     x=x(index,:);
+% 
+%     area=0;
+%     x(threshold_num+1,1)=1;
+%     y(threshold_num+1,1)=1;
+%     area=0.5*x(1)*y(1);
+%     for i=1:threshold_num
+%         area=area+(y(i)+y(i+1))*(x(i+1)-x(i))/2;
+%     end
+%     % plot(x,y)
+% end
+
+%%------------seed problem, should be paid enough attention-------------
+function [L,W] = noisygraph(data, gType, dist, knn,isrescaled,seed)
+    if nargin < 2
+        error('the first 2 parameters are needed');
+    end
+    if nargin < 3
+        dist = 'euclidean';
+    end
+    if nargin < 4
+        knn = 3;
+    end
+    if nargin < 5
+        isrescaled = true;
+    end
+    if nargin < 6
+        seed = -1;
+    end
+    
+    if ~isscalar(gType)
+        error('gType should be numerical')
+    end
+    
+    if seed == -1
+        error('seed is needed'); % set the fixed seed will hurt...
+    end
+    rng(seed, 'twister');
+    n = size(data, 1);
+    
+    if gType == 1
+        if isrescaled
+            disp('generate uniformly random graph, rescaled');
+        else
+            disp('generate uniformly random graph, not rescaled');
+        end
+        
+        W = rand(n,n);
+        W = (W + W')./2;
+        W(eye(n) == 1) = 0; % for lgc type
+        D = diag(1./sqrt(sum(W,2)));
+        L = eye(n) - D*W*D;
+        if isrescaled
+            L = L/norm(L, 'fro');
+        end
+        
+    elseif gType == 2
+        
+        if strcmp(dist, 'euclidean') || strcmp(dist, 'cityblock') || strcmp(dist, 'cosine')
+            
+        else
+            error('check the "dist" parameter, not supported yet');
+        end
+        
+        rand_idx = randperm(n);  
+        [L, W] = distMat(data(rand_idx,:), dist, [], knn, isrescaled);
+  
+    else 
+        error('only support 2 types currently');
+    end
+ 
+
+end
+%%------------temporarily abandoned--------------
