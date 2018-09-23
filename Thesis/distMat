@@ -1,0 +1,133 @@
+function [L, W] = distMat(data, dist, param, knn,normalize,Ltype)
+%
+%  generate different types of distance matrices
+% -------------------------------
+%  INPUT:
+%   param: 1x2 cell--{distType,param}
+%       'distType' determines the distance metrics for guassian kernel
+%       'param' determines the multiplier of sigma in Gaussian function, which 
+%       denotes the average feature norm in out default setting.
+%   knn: scalar, k nearest neighour to construct a graph
+%       for 'gaussian', the orignal weights are kept. 
+%       for 'euclidean' and other types, the non-weighted knn graph are
+%       used, that is, weights can only be 1 or 0.
+%  OUTPUT:
+%    L: nxn matrix, graph lagrangian (default normalized)
+%    W: nxn matrix, similarity matrix
+if nargin < 2
+    error('data and distance choice are both needed');
+end
+if nargin < 3 || isempty(param)
+    param = {'euclidean', 1};
+    %default: euclidean metric
+    %average feature norm
+    %used in gaussian kernel distance
+end
+
+n = size(data, 1);
+
+if nargin < 4
+    knn = n - 1;
+end
+if nargin < 5
+    normalize = true;
+end
+if nargin < 6
+    Ltype = 1;
+end
+    
+
+
+
+if strcmp(dist, 'gaussian')
+        
+    if iscell(param) && length(param) == 1
+        param = {'euclidean', param{1}};
+    end
+    if isscalar(param)
+        param = {'euclidean', param};
+    end
+
+    
+    dmat = pdist(data, param{1}); % diagonals are already zero
+    W = squareform(dmat);
+    sigma = param{2} * mean(arrayfun(@(n) norm(data(n,:)), 1:size(data,1)));  % notice: this part should be changed when using other measures except euclidean
+    W = exp(-1* W.*W/(2*sigma^2));
+    W(eye(n) == 1) = 0; % set the diagonals to be zeros
+elseif strcmp(dist, 'euclidean')
+    dmat = pdist(data, 'euclidean'); 
+    W = squareform(dmat);
+elseif strcmp(dist, 'cityblock')
+    dmat = pdist(data, 'cityblock'); 
+    W = squareform(dmat);
+elseif strcmp(dist, 'cosine')
+    dmat = pdist(data, 'cosine');
+    W = squareform(dmat);
+elseif strcmp(dist, 'minkowski')
+    dmat = pdist(data, 'minkowski');
+    W = squareform(dmat);
+elseif strcmp(dist, 'chebychev')
+    dmat = pdist(data, 'chebychev');
+    W = squareform(dmat);
+else
+    error('this distance is not included in this function yet');
+end
+
+% if ~strcmp(dist, 'gaussian') && ~ isempty(param)
+%     warning('the $param$ is only designed for gaussian, not for other metric yet')
+% end
+
+% construct knn graphs
+if ~strcmp(dist, 'gaussian')
+    % for the non-weighted graphs
+    W = W + sparse(1:n,1:n,inf);
+    Weight = zeros(n);
+    for i = 1:n
+        [~,ind] = sort(W(i,:));
+        Weight(i,ind(1:knn)) = 1;
+    end
+    W = sparse(double(Weight|Weight')); % crucial cast
+    
+else
+    % for the hot kernel 
+    Weight = zeros(n);
+    for i = 1:n
+        [~,ind] = sort(W(i,:), 'descend');
+        Weight(i,ind(1:knn)) = 1;
+    end
+    Weight = sparse(Weight|Weight');
+    W = W.*Weight;
+end
+
+
+if knn == n - 1
+    disp('construct full connected graphs');
+else
+    fprintf('construct %i nn graph: %i\n', knn);
+end
+
+
+if max(max(W)) < 1e-8
+    warning('the maximum similarity is lower than 1e-8, does it matter?');
+end
+
+if Ltype == 1
+    % LGC type
+    D = diag(1./sqrt(sum(W,2)));
+    L = eye(n) - D*W*D;
+    
+elseif Ltype == 2
+    % GFHF type
+    L = sum(W,2) - W;
+else
+    error('this type of L form is not included yet');
+end
+    
+if normalize
+    disp('the graph laplacian is rescaled');
+    L = L./norm(L,'fro');
+end
+ 
+
+end
+
