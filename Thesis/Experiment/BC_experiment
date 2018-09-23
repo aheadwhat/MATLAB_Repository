@@ -1,0 +1,416 @@
+function BC_experiment
+
+% %% senario 1:
+rng(1,'twister');
+dataname = 'breast-cancer';
+lb_rate = 0.1;    % labeled rate 0.1 0.2
+
+ntrail = 20;      % #(total times of trails)
+ngraph_r = 9;     % #(related graphs)
+ngraph_n_1 = 15;  % #(noisy graphs by randomly generating)
+ngraph_n_2 = 15;  % $(noisy graphs based on shuffled data)
+ngraph = ngraph_n_1 + ngraph_n_2 + ngraph_r;      % #(all graphs)
+isrescaled = true; % indicate whether to normalize the graph laplacian or not
+% load data
+addpath data;
+load('wdbc_dataset.mat','wdbc_data','wdbc_class');
+data = wdbc_data;
+y = wdbc_class;
+
+% check labels
+if sum(y < 0) ==0 
+   warning('the labeled ones should be +1/-1, autoly cast here'); 
+   y(y == 0) = -1;  %crucial for our methods
+end
+
+%
+% graph construction
+% [L, W] = distMat(data, dist, param, knn,rescale,Ltype)
+% relative graphs
+clear L W;
+[L{1},W{1}] = distMat(data, 'euclidean', [], 3, isrescaled);
+[L{2},W{2}] = distMat(data, 'euclidean', [], 5, isrescaled);
+[L{3},W{3}] = distMat(data, 'euclidean', [], 7, isrescaled);
+[L{4},W{4}] = distMat(data, 'cosine', [], 3, isrescaled);
+[L{5},W{5}] = distMat(data, 'cosine', [], 5, isrescaled);
+[L{6},W{6}] = distMat(data, 'cosine', [], 7, isrescaled);
+[L{7},W{7}] = distMat(data, 'cityblock', [], 3, isrescaled);
+[L{8},W{8}] = distMat(data, 'cityblock', [], 5, isrescaled);
+[L{9},W{9}] = distMat(data, 'cityblock', [], 7, isrescaled);
+
+if size(L,2) ~= ngraph_r
+    error('please check the related graph you ve input');
+end
+
+if isrescaled
+    disp('the output graph laplacians are rescaled');
+else
+    disp('the rescaling operation is not carried out');
+end
+
+
+n = size(data, 1);
+% irrelatvie graphs
+% usage: [L,W] = noisygraph(data, gType, dist, knn,isrescaled,seed)
+% type I: random noise version
+for i = (ngraph_r + 1) : (ngraph_r + ngraph_n_1)
+    rW = rand(n,n);
+    rW = (rW + rW')./2;
+    rW(eye(n) == 1) = 0; % for lgc type
+    W{i} = rW;
+    D = diag(1./sqrt(sum(rW,2)));
+    L{i} = eye(n) - D*rW*D;
+    if isrescaled
+        L{i} = L{i}/norm(L{i}, 'fro');
+    end
+end
+% type II: create knn graphs on shuffled data
+for i = (ngraph_r + ngraph_n_1 + 1) : ngraph
+   tmp_idx = randperm(n);
+   [L{i},W{i}] = distMat(data(tmp_idx,:), 'euclidean', [], 5, isrescaled);    
+end
+
+
+relevantInd = [ones(1,ngraph_r), -1*ones(1,ngraph - ngraph_r)];
+
+nmethods = 5; % total number of methods
+aucResults = zeros(nmethods,ntrail); 
+errResults = zeros(nmethods,ntrail); % only record ROC, but for discrete classifier, here record accuaracy
+weightResults = zeros(ntrail, ngraph,nmethods);
+fpRate = zeros(nmethods, ntrail);
+% l_ind = cell(ntrail, 1); % save the labeled index for replication
+for trail = 1:ntrail
+    fprintf('no. %d trails:\n', trail);
+    
+    % randomly choose pre-defined percentage of labels to be seen
+%     lb_idx = randperm(length(y));
+%     lb_idx = lb_idx(1:round(n*lb_rate));
+    y_tmp1 = find(y > 0);
+    y_tmp2 = find(y < 0);
+    n1 = length(y_tmp1);
+    n2 = length(y_tmp2);
+    lb_idx_1 = randperm(n1);
+    lb_idx_1 = lb_idx_1(1:round(n1*lb_rate));
+    lb_idx_2 = randperm(n2);
+    lb_idx_2 = lb_idx_2(1:round(n2*lb_rate));
+    lb_idx = [lb_idx_1,lb_idx_2];
+    
+%     l_ind{trail} = lb_idx; % save the labeled index for replication
+%     continue;
+    
+    Y = y;
+    ul_idx = setdiff(1:n, lb_idx);
+    Y(ul_idx) = 0;
+    y_ul = y(ul_idx);
+    
+% ---- abandoned----
+% %%%% usage:  [Af, mu, pred] = MGILPwF(L, y, alpha, beta, gamma, maxIter, tol)
+%     [~, mu_mgf, f_mgf] = MGILPwF(L,Y,0.1,0.05,0.1);  
+%     [~, mu_mgg, f_mgg] = MGILPwF(L,Y,0.1,0.05,0);
+% ---- abandoned----
+ 
+% %%%% usage:  [f, mu] = MGSP(L,y,beta, gamma,maxIter, tol)   
+    ord = 1;
+    [f, mu] = MGSP(L, Y, 0.05, 0.5); 
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+
+% %%%% usage:  [f, mu] = TAMGI(W, y, beta, gamma, rescale, cost)
+    ord = 2;
+    [f, mu] = TAMGI(W,Y,0.05,0.1, [], 'cr');
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+
+
+% %%%% usage:  [f, mu] = GeneMANIA(W, y, beta, gamma, rescale, regularize)
+    ord = 3;
+    [f, mu] = GeneMANIA(W,Y,0.2,1,true, false); % not regularized, gamma is redundant
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+
+% %%%% usage:  [f, mu] = GeneMANIA(W, y, beta, gamma, rescale, regularize)
+    ord = 4;
+    [f, mu] = GeneMANIA(W,Y, 0.2, 10,true, true); % regularized
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+    
+% %%%% usage:  [f, mu] = myLEAD(W,y,dis,C1, C2, rescale)
+    ord = 5;
+    dis = squareform(pdist(data, 'euclidean'));  % cruial to myLead (for KNN)
+    [f, mu] = myLEAD(W, Y, dis);
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    errResults(ord, trail) = acc_eval(y_ul,f_ul); % ROC doesnt exit, use acc
+    weightResults(trail, :, ord) = mu;
+    
+    
+end
+% save(strcat(dataname,num2str(noiselevel),'data_lbr',num2str(lb_rate),'.mat'),'l_ind');
+disp(strcat(dataname,num2str(lb_rate)));
+errResults
+aucResults
+fpRate
+mean(errResults,2)
+mean(aucResults,2)
+% 
+save(strcat(dataname,'_lbr',num2str(lb_rate),'.mat'), 'errResults', 'aucResults', 'fpRate','weightResults');
+
+
+
+%% senario 2:
+
+rng(1,'twister');
+dataname = 'breast-cancer';
+lb_rate = 0.2;    % labeled rate 0.1 0.2
+
+ntrail = 20;      % #(total times of trails)
+ngraph_r = 9;     % #(related graphs)
+ngraph_n_1 = 15;  % #(noisy graphs by randomly generating)
+ngraph_n_2 = 15;  % $(noisy graphs based on shuffled data)
+ngraph = ngraph_n_1 + ngraph_n_2 + ngraph_r;      % #(all graphs)
+isrescaled = true; % indicate whether to normalize the graph laplacian or not
+% load data
+addpath data;
+load('wdbc_dataset.mat','wdbc_data','wdbc_class');
+data = wdbc_data;
+y = wdbc_class;
+
+% check labels
+if sum(y < 0) ==0 
+   warning('the labeled ones should be +1/-1, autoly cast here'); 
+   y(y == 0) = -1;  %crucial for our methods
+end
+
+%
+% graph construction
+% [L, W] = distMat(data, dist, param, knn,rescale,Ltype)
+% relative graphs
+clear L W;
+[L{1},W{1}] = distMat(data, 'euclidean', [], 3, isrescaled);
+[L{2},W{2}] = distMat(data, 'euclidean', [], 5, isrescaled);
+[L{3},W{3}] = distMat(data, 'euclidean', [], 7, isrescaled);
+[L{4},W{4}] = distMat(data, 'cosine', [], 3, isrescaled);
+[L{5},W{5}] = distMat(data, 'cosine', [], 5, isrescaled);
+[L{6},W{6}] = distMat(data, 'cosine', [], 7, isrescaled);
+[L{7},W{7}] = distMat(data, 'cityblock', [], 3, isrescaled);
+[L{8},W{8}] = distMat(data, 'cityblock', [], 5, isrescaled);
+[L{9},W{9}] = distMat(data, 'cityblock', [], 7, isrescaled);
+
+if size(L,2) ~= ngraph_r
+    error('please check the related graph you ve input');
+end
+
+if isrescaled
+    disp('the output graph laplacians are rescaled');
+else
+    disp('the rescaling operation is not carried out');
+end
+
+
+n = size(data, 1);
+% irrelatvie graphs
+% usage: [L,W] = noisygraph(data, gType, dist, knn,isrescaled,seed)
+% type I: random noise version
+for i = (ngraph_r + 1) : (ngraph_r + ngraph_n_1)
+    rW = rand(n,n);
+    rW = (rW + rW')./2;
+    rW(eye(n) == 1) = 0; % for lgc type
+    W{i} = rW;
+    D = diag(1./sqrt(sum(rW,2)));
+    L{i} = eye(n) - D*rW*D;
+    if isrescaled
+        L{i} = L{i}/norm(L{i}, 'fro');
+    end
+end
+% type II: create knn graphs on shuffled data
+for i = (ngraph_r + ngraph_n_1 + 1) : ngraph
+   tmp_idx = randperm(n);
+   [L{i},W{i}] = distMat(data(tmp_idx,:), 'euclidean', [], 5, isrescaled);    
+end
+
+
+relevantInd = [ones(1,ngraph_r), -1*ones(1,ngraph - ngraph_r)];
+
+nmethods = 5; % total number of methods
+aucResults = zeros(nmethods,ntrail); 
+errResults = zeros(nmethods,ntrail); % only record ROC, but for discrete classifier, here record accuaracy
+weightResults = zeros(ntrail, ngraph,nmethods);
+fpRate = zeros(nmethods, ntrail);
+% l_ind = cell(ntrail, 1); % save the labeled index for replication
+for trail = 1:ntrail
+    fprintf('no. %d trails:\n', trail);
+    
+%     % randomly choose pre-defined percentage of labels to be seen
+%     lb_idx = randperm(length(y));
+%     lb_idx = lb_idx(1:round(n*lb_rate));
+    y_tmp1 = find(y > 0);
+    y_tmp2 = find(y < 0);
+    n1 = length(y_tmp1);
+    n2 = length(y_tmp2);
+    lb_idx_1 = randperm(n1);
+    lb_idx_1 = lb_idx_1(1:round(n1*lb_rate));
+    lb_idx_2 = randperm(n2);
+    lb_idx_2 = lb_idx_2(1:round(n2*lb_rate));
+    lb_idx = [lb_idx_1,lb_idx_2];
+
+    
+%     l_ind{trail} = lb_idx; % save the labeled index for replication
+%     continue;
+    
+    Y = y;
+    ul_idx = setdiff(1:n, lb_idx);
+    Y(ul_idx) = 0;
+    y_ul = y(ul_idx);
+    
+% ---- abandoned----
+% %%%% usage:  [Af, mu, pred] = MGILPwF(L, y, alpha, beta, gamma, maxIter, tol)
+%     [~, mu_mgf, f_mgf] = MGILPwF(L,Y,0.1,0.05,0.1);  
+%     [~, mu_mgg, f_mgg] = MGILPwF(L,Y,0.1,0.05,0);
+% ---- abandoned----
+ 
+% %%%% usage:  [f, mu] = MGSP(L,y,beta, gamma,maxIter, tol)   
+    ord = 1;
+    [f, mu] = MGSP(L, Y, 0.05, 1); 
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+
+% %%%% usage:  [f, mu] = TAMGI(W, y, beta, gamma, rescale, cost)
+    ord = 2;
+    [f, mu] = TAMGI(W,Y,0.05,0.03);
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+
+
+% %%%% usage:  [f, mu] = GeneMANIA(W, y, beta, gamma, rescale, regularize)
+    ord = 3;
+    [f, mu] = GeneMANIA(W,Y,0.2,1,true, false); % not regularized, gamma is redundant
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+
+% %%%% usage:  [f, mu] = GeneMANIA(W, y, beta, gamma, rescale, regularize)
+    ord = 4;
+    [f, mu] = GeneMANIA(W,Y, 0.1, 1,true, true); % regularized
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    [~,~,~,auc] = perfcurve(y_ul,f_ul,1);
+    errResults(ord, trail) = auc;
+    weightResults(trail, :, ord) = mu;
+    
+% %%%% usage:  [f, mu] = myLEAD(W,y,dis,C1, C2, rescale)
+    ord = 5;
+    dis = squareform(pdist(data, 'euclidean'));  % cruial to myLead (for KNN)
+    [f, mu] = myLEAD(W, Y, dis);
+    f_ul = f(ul_idx);
+    
+    aucResults(ord,trail) = modifiedAUC(mu, relevantInd);
+    fpRate(ord,trail) = fpr(mu,relevantInd);
+    errResults(ord, trail) = acc_eval(y_ul,f_ul); % ROC doesnt exit, use acc
+    weightResults(trail, :, ord) = mu;
+    
+    
+end
+% save(strcat(dataname,num2str(noiselevel),'data_lbr',num2str(lb_rate),'.mat'),'l_ind');
+disp(strcat(dataname,num2str(lb_rate)));
+errResults
+aucResults
+fpRate
+mean(errResults,2)
+mean(aucResults,2)
+% 
+save(strcat(dataname,'_lbr',num2str(lb_rate),'.mat'), 'errResults', 'aucResults', 'fpRate','weightResults');
+
+
+
+
+end
+
+
+
+
+
+
+
+
+
+
+function mauc = modifiedAUC(pred_label, real_label)
+    % for graph selection experiment
+    % pred_label: the graph weights
+    % real_label: the label indicating whether the graph is relevant or not
+    n = length(real_label);
+    idx_1 = find(real_label == 1);
+    idx_2 = setdiff(1:n, idx_1);
+    k1 = length(idx_1);
+    k2 = n - k1;
+    
+    W0 = sum(pred_label(idx_1) == 0) * sum(pred_label(idx_2) == 0);
+    W = repmat(reshape(pred_label(idx_1),[],1),1,k2) -  repmat(reshape(pred_label(idx_2),1,[]), k1,1); 
+    mauc = (sum(sum(W > 0)) + W0)/(k1 * k2);
+
+        
+end
+
+
+function val = fpr(pred_labeled, real_label)
+    % for graph selection evaluation
+    % pred_label: the graph weights
+    % real_label: the label indicating whether the graph is relevant or not
+    idx = find(real_label < 0);
+    nfalse = length(idx);
+%     fp = sum(pred_labeled(idx) ~=0 );
+    fp = sum(pred_labeled(idx) > 0 );
+    val = fp/nfalse;
+        
+end
+
+function acc = acc_eval(real_label,scores, threshold)
+    % take careful, y: +1, -1, 0
+    if nargin < 3
+        threshold = 0;
+    end
+    scores(scores >= threshold) = 1;
+    scores(scores < threshold ) = -1;
+    acc = mean(scores == real_label);
+end
+
+
+
