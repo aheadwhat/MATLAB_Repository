@@ -1,0 +1,159 @@
+function [f, mu, wL] = TAMGI(W, y, beta, gamma, rescale, cost)
+% A noval two-stage multiple graph integrated method with L2 norm
+% adapt the KTA method directly:
+% '-1 * \sum \mu_i * KTA(W_i, yy^T)' plus L2 norm 
+% s.t. sum to 1 and positive constraint
+%
+% Parameter
+% ------------
+% INPUT:
+%      W: cell array
+%         graph-similarity matrices
+%      y: nx1 vector
+%         initial label vector (-1,+1,0)
+%      beta: positive scalar
+%         control the dependence to the initial labels
+%      gamma: positive scalar
+%         penalty term
+%      rescale: true or false, default true                                        
+%         use the rescaled graph laplacian or not
+%      cost: positive scalar, or specified string. default 1                                       
+%         control the relative cost of negative instances, when in the
+%         imbalanced setting, this maybe useful.
+%         use 'cr' to initialize it by 'class ratio'
+
+%%-----------
+%OUPUT:
+%      Af: nxP matrix
+%         label fitting from P sources
+%      mu: Px1 vector
+%         weights for every sources
+%      wL: nxn matrix
+%         weighted graph laplacian
+%
+%NOTE: the result is affected by the graph laplacian, due to the numerical
+%      precision problem, the degenerated result may be unstable.
+%
+if nargin < 2
+    error('a cell array of graph matrix and a labled vector are both needed!');
+end
+
+if nargin < 3 || isempty(beta)
+    beta = 0.1;
+end
+if nargin < 4 || isempty(gamma)
+    gamma = 0.1;
+end
+if nargin < 5 || isempty(rescale)
+    rescale = true;
+end
+if nargin < 6 || isempty(cost)
+    cost = 1;
+end
+
+if strcmp(cost, 'cr')
+    disp('use the class ratio to initialize the cost');
+    nlb_p = sum(y==1);
+    nlb_n = sum(y==-1);
+    cost = nlb_p/nlb_n; %positve labels proportion
+end
+
+if size(y, 2) ~= 1 
+    error('y is invalid, it should be a nx1 vector');
+end
+
+
+% initialization
+P = size(W,2); % #(graph matrices)
+n = size(W{1},1); % #(samples)
+
+mu = zeros(P,1) + 1/P;  % initial weights
+
+
+if rescale
+    disp('rescale all the weighted matrices')
+    for i = 1:P
+        W{i} = W{i}/norm(W{i}, 'fro');
+    end  
+end
+
+
+
+% kernel-target alignment
+target_idx = (y ~= 0);
+Y = y(target_idx); % {1,-1} should not be changed into {1,0} but maybe {a,-b}
+Y(Y<0) = Y(Y<0) * cost;
+YY = Y * Y';
+
+kta = zeros(1,P);
+cyy = sum(sum(YY .* YY));
+
+Wt = cell(size(W)); % to save the labeled part of W{i}
+
+for i = 1:P
+    tmp = W{i};
+    Wt{i} = tmp(target_idx,target_idx);  
+    
+    cww = sum(sum(Wt{i} .* Wt{i})); 
+    cwy= sum(sum(Wt{i} .* YY));
+    kta(i) = cwy/sqrt(cww * cyy);
+end
+
+
+% similarity matrix rescaling, filtering and thresholding
+kta = - kta; % transform the maximum problem to the minimum problem
+kta_so = sort(kta);
+kta_cs = cumsum(kta_so);
+eta = arrayfun(@(x)(2 * gamma + kta_cs(x))./x, 1:P);
+
+
+kta_so(P + 1) = inf;
+for i = 1:P
+    if eta(i) > kta_so(i) && eta(i) <= kta_so(i + 1)
+        m = i;
+        break;
+    end
+    
+end
+
+
+for i = 1:P
+    if eta(m) > kta(i)
+        mu(i) = (eta(m) - kta(i))/(2 * gamma);
+    else
+        mu(i) = 0;
+    end
+    
+end
+
+   
+% %% old version: weighted graph Laplacian
+% wL = zeros(n);
+% for i = 1:P
+%     D = diag(1./sqrt(sum(W{i},2)));
+%     L = eye(n) - D*W{i}*D;
+%     if rescale
+%         L = L / norm(L, 'fro');
+%     end
+%     wL = wL + mu(i) .* L;
+% end
+%
+% if rescale
+%     disp('rescaled graph laplacian is used') %seems a wrong reminder
+% end
+% 
+% f = beta.*((beta * eye(n) + wL)\y);
+
+wW = zeros(n);
+for i = 1:P
+    wW = wW + mu(i) .* W{i};
+end
+D = diag(1./sqrt(sum(wW,2)));
+L = eye(n) - D*wW*D;
+
+f = beta.*((beta * eye(n) + L)\y);
+
+wL = L;
+
+end
+
