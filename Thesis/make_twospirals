@@ -1,0 +1,69 @@
+function [X, Y] = make_twospirals(n_samples, noise, degrees, start, shuffle, random_state)
+%%% Make two spirals (variant of two interleaving half circles) in 2d
+    
+%     Parameters
+%     ----------
+%     n_samples : int, optional (default=200)
+%         The total number of points generated.
+%     noise : double
+%         0 is no noise, at 1 the spirals will start overlapping
+%     degree: double
+%         controls the length of the spirals
+%     start: double
+%         determines how far from the origin the spirals start, in degrees
+%     shuffle : bool, optional (default=true)
+%         Whether to shuffle the samples
+%     random_state : int, or false (default= false)
+%         If int, random_state is the seed used by the random number generator
+%     Returns
+%     -------
+%     X : array of shape [n_samples, 2]
+%         The generated samples.
+%     y : array of shape [n_samples]
+%         The integer labels (-1 or 1) for class membership of each sample.
+    if nargin < 1
+        n_samples = 1000;
+    end
+    if nargin < 2 || isempty(noise)
+        noise = 0;
+    end
+    if nargin < 3 || isempty(degrees)
+        degrees = 480;
+    end    
+    if nargin < 4 || isempty(start)
+        start = 10;
+    end    
+    if nargin < 5 || isempty(shuffle)
+        shuffle = true;
+    end
+    if nargin < 6 || isempty(random_state)
+        random_state = false;
+    end
+    
+    if random_state
+        rng(random_state);
+    end
+    
+    
+    deg2rad = (2*pi)/360;
+    start = start * deg2rad;
+
+    N1 = floor(n_samples/2);
+    N2 = n_samples-N1;
+    
+    n = start + sqrt(rand(N1,1)) * degrees * deg2rad;   
+    d1 = [-cos(n).*n + rand(N1,1)*noise sin(n).*n+rand(N1,1)*noise];
+    
+    n = start + sqrt(rand(N1,1)) * degrees * deg2rad;      
+    d2 = [cos(n).*n+rand(N2,1)*noise -sin(n).*n+rand(N2,1)*noise];
+    
+    X = [d1;d2]; 
+    Y = [ones(N1, 1); -1 * ones(N2,1)]; 
+     
+    if shuffle
+        rind = randperm(n_samples);
+        X = X(rind,:);
+        Y = Y(rind);
+    end
+
+end
