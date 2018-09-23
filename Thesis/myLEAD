@@ -1,0 +1,330 @@
+function [f, mu] = myLEAD(W,y,dis,C1, C2, rescale)
+%% LEAD refined script
+% The similarity matrix won't be normalized, all operation will follow the
+% advice mentioned in the paper 'Graph quality judgement: A large margin
+% expedition'
+% IMPORTANT issue: the path is automatically set in the subfunction 'LEAD'
+%--------
+% INPUT: |
+%--------
+% W: cell array
+%    stores the similarity matrices
+% y: nx1 vetor
+%    label vector(-1, +1, 0)
+% dis: nxn matrix
+%    the baseline method 'KNN' will choose nn based on this matrix
+% C1 & C2: positive scalar
+%    penalty term occurs in the algorithm
+% rescale: logic, default 'false'
+%    indicate whether to rescale the similarity matrix
+
+%--------
+% INPUT: |
+%--------
+% f: nx1 vector
+%    prediction vector
+% mu: Px1 vector
+%    weight vector for each graph
+%%
+if nargin < 3
+    error('the first 3 parameters are all needed!');
+end
+if nargin < 4
+    C1 = 1;
+end
+if nargin < 5
+    C2 = 0.01;
+end
+if nargin < 6
+    rescale = false;
+end
+
+if ~ismatrix(dis)
+    error('check the distance matrix again!');
+end
+
+P = size(W, 2);  % #(graphs/network)
+if rescale
+    disp('rescale the similarity matrix for LEAD');
+    for i = 1:P
+        W{i} = W{i} / norm(W{i},'fro');
+    end
+end
+
+l_ind = find(y ~= 0);
+GSSL = @Harmonic; % choose an implement of GSSL
+component = cellfun(@GetConnectedComponent,W,'UniformOutput',false); % get connected components which are fed to GSSL
+
+% %% usage: prediction = KNN(dis,y,l_ind,k)
+baseline_pred = KNN(dis, y, l_ind, 1); % obtain 1NN predictions
+gssl_value = cellfun(GSSL,W,repmat({y},size(W)),repmat({l_ind},size(W)),...
+    component,repmat({baseline_pred},size(W)),'UniformOutput',false); % obtain GSSL predictive values
+
+[f, mu]= LEAD(cell2mat(gssl_value),y,l_ind,C1,C2,baseline_pred);
+
+% mu contains offset b, in our setting, it's redundant, should be trimmed
+mu = mu(1:end-1)';
+
+
+end
+
+function [pred,w] = LEAD(gssl_value,label,l_ind,C1,C2,baseline_pred)
+
+% LEAD implements the LEAD algorithm in [1].
+%  ========================================================================
+%
+%  LEAD employs the Matlab version of liblinear [2] (available at
+%  http://www.csie.ntu.edu.tw/~cjlin/liblinear/).
+%
+%  Input:
+%  LEAD takes 6 input parameters:
+%
+%  - gssl_value: a matrix with size n * T, where n is the number of
+%                instances and T is the number of graphs that gssl takes.
+%                Each row is a set of predictive values of an instance.
+%
+%  - label: a column binary vector with length n. Each element is +1 or -1
+%           for labeled instances. For unlabeled instances, this parameter
+%           could be used for computing accuracy if the ground truth is
+%           available.
+%
+%  - l_ind: a row vector with length l, where l is the number of labeled
+%           instance. Each element is an index of a labeled instance.
+%
+%  - C1: weight for the hinge loss of labeled instances. It was set as 1 in
+%        our paper.
+%
+%  - C2: weight for the hinge loss of unlabeled instances. It was set as
+%        0.01 in our paper.
+%
+%  - baseline_pred: a column vector with length n. Each element is a
+%                   baseline predictive result of the corresponding
+%                   instance. LEAD will replace the result of S3VM with
+%                   this if the instance locates in the margin of S3VM.
+%
+%  ========================================================================
+%
+%  Output:
+%
+%  - pred: a column vercto with length n. Each element is a prediction for
+%          the label of the instance, including labeled and unlabeled
+%          instances, even though for labeled instances the prediction is
+%          consistent with the true label.
+%
+%  - w: the weight vector of linear S3VM classifier where if the classifier
+%       f(x) = w0'*x + b then w = [w0',b].
+%
+%  ========================================================================
+%
+%  Reference:
+%  [1]  Yu-Feng Li, Shao-Bo Wang and Zhi-Hua Zhou. Graph Quality Judgement: A Large Margin Expedition. In: Proceedings of the 25th International Joint Confernece on Artificial Intelligence (IJCAI'16), New York, NY, 2016.
+%  [2]  R.-E. Fan, K.-W. Chang, C.-J. Hsieh, X.-R. Wang, and C.-J. Lin. LIBLINEAR: A library for large linear classification. Journal of Machine Learning Research 9(2008), 1871-1874.
+
+% addpath('liblinear/matlab');
+cpath = pwd;
+addpath(strcat(cpath,'/LEAD/liblinear/matlab'));
+param = '-q -s 3 -B 1';
+
+u_ind = 1:length(label);
+u_ind(l_ind) = [];
+
+y = zeros(size(label));
+y(l_ind) = label(l_ind);
+
+pos_ratio = sum(y(l_ind)==1)/length(l_ind);
+y(u_ind) = self_predict(sum(gssl_value(u_ind,:),2),pos_ratio);
+z = sparse(gssl_value);
+weight = zeros(size(y));
+weight(l_ind) = weight_balance(y(l_ind),C1);
+c2 = 1e-6;
+while c2 < C2
+    weight(u_ind) = weight_balance(y(u_ind),c2);
+    last_obj = inf;
+    model = train(weight,y,z,param);
+    assert(model.Label(1)==1);
+    y(u_ind) = self_predict(phi(z(u_ind,:))*model.w',pos_ratio);
+    obj = objective_value(model.w',phi(z),y,weight);
+    while obj < last_obj
+        model = train(weight,y,z,param);
+        assert(model.Label(1)==1);
+        y(u_ind) = self_predict(phi(z(u_ind,:))*model.w',pos_ratio);
+        last_obj = obj;
+        obj = objective_value(model.w',phi(z),y,weight);
+    end
+    c2 = c2 * 2;
+end
+
+w = model.w;
+
+fallback_ind = intersect(find(y.*(phi(z)*model.w')<1),u_ind);
+pred = y;
+pred(fallback_ind) = baseline_pred(fallback_ind);
+
+
+end
+
+function x = phi(x)
+
+x = [x,ones(size(x,1),1)];
+
+end
+
+function weight = weight_balance(y,C)
+
+weight = ones(size(y))*C;
+weight(y==-1) = sum(y==1)/sum(y==-1)*C;
+
+end
+
+function y = self_predict(f,r)
+
+beta = 0;
+u = length(f);
+y = sign(f);
+y(y==0) = randi(2,sum(y==0),1)*2 - 3;
+rk = zeros(u,1);
+[~,ind] = sort(f,'descend');
+rk(ind) = 1:u;
+y((rk-1)/u<=r-beta) = 1;
+y((rk+1)/u>=r+beta) = -1;
+assert(all(y~=0));
+
+end
+
+function l = objective_value(w,x,y,weight)
+
+l = w'*w/2 + weight'*max(0,1-y.*(x*w));
+
+end
+
+function component = GetConnectedComponent(W)
+
+% W: graph matrix
+% ind: the data indeces of each connected component
+% n: the number of connected components
+
+N = size(W,1);
+[p,~,r,~] = dmperm(W+sparse(1:N,1:N,1));
+n = length(r) - 1;
+ind = cell(n,1);
+for i = 1:n
+    ind{i} = p(r(i):r(i+1)-1);
+end
+component.n = n;
+component.ind = ind;
+
+end
+
+function prediction = KNN(dis,y,l_ind,k)
+
+N = size(dis,1);
+prediction = zeros(N,1);
+u_ind = 1:N;
+u_ind(l_ind) = []; %use diffset is quicker? just u_ind = setdiff(1:N-l_ind)
+[~,ind] = sort(dis(u_ind,l_ind),2); % for every unlabeled, sort their labeled neighbours
+nn_ind = l_ind(ind(:,1:min(k,length(l_ind))));
+% the labeled neighbours may be less than k, so add a min control,
+% absolutely we got at least one labeled.
+prediction(l_ind) = y(l_ind);
+prediction(u_ind) = mean(y(nn_ind),2);
+
+end
+
+function [pred,pred_cmn] = Harmonic(W,y,l_ind,comp,baseline_pred)
+
+n_comp = comp.n;
+ind_comp = comp.ind;
+pred = zeros(size(W,1),1);
+pred_cmn = zeros(size(pred));
+for n = 1:n_comp
+    ind = ind_comp{n};
+    l_ind_comp = intersect(l_ind,ind);
+    if isempty(l_ind_comp)
+        pred(ind) = baseline_pred(ind);
+        pred_cmn(ind) = baseline_pred(ind);
+    else
+        new_ind = zeros(1,length(l_ind_comp));
+        for s = 1:length(l_ind_comp)
+            new_ind(s) = find(ind==l_ind_comp(s));
+        end
+        [pred(ind),pred_cmn(ind)] = sub_problem_hf(W(ind,ind),y(ind),new_ind);
+    end
+end
+
+end
+
+function [pred,pred_cmn] = sub_problem_hf(W,y,l_ind)
+
+N = size(W,1);
+u_ind = 1:N;
+u_ind(l_ind) = [];
+ind = [l_ind,u_ind];
+W = W(ind,ind);
+
+Y = bsxfun(@(x,y)x==y,y(l_ind),[1,-1]);
+
+[fu,fu_cmn] = harmonic_function(W,Y);
+
+pred = zeros(N,1);
+pred(l_ind) = y(l_ind);
+pred(u_ind) = fu(:,1) - fu(:,2);
+
+pred_cmn = pred;
+pred_cmn(u_ind) = fu_cmn(:,1) - fu_cmn(:,2);
+
+end
+
+function [fu,fu_cmn] = harmonic_function(W,fl)
+
+l = size(fl,1);
+n = size(W,1);
+L = diag(sum(W,2)) - W;
+
+fu = -(L(l+1:n,l+1:n))\(L(l+1:n,1:l)*fl);
+
+if any(sum(fu)==0)
+    fu_cmn = fu;
+else
+    q = sum(fl)+1;
+    fu_cmn = fu.*repmat(q./sum(fu),n-l,1);
+end
+
+end
+
+
+function prediction = LLGC(W,y,l_ind,comp,baseline_pred)
+
+alpha = 0.99;
+
+n_comp = comp.n;
+ind_comp = comp.ind;
+prediction = zeros(size(W,1),1);
+for n = 1:n_comp
+    ind = ind_comp{n};
+    l_ind_comp = intersect(l_ind,ind);
+    if isempty(l_ind_comp)
+        prediction(ind) = baseline_pred(ind);
+    else
+        new_ind = zeros(length(l_ind_comp),1);
+        for s = 1:length(l_ind_comp)
+            new_ind(s) = find(ind==l_ind_comp(s));
+        end
+        prediction(ind) = sub_problem_lgc(W(ind,ind),y(ind),new_ind,alpha);
+    end
+end
+
+end
+
+function prediction = sub_problem_lgc(W,y,l_ind,alpha)
+
+N = size(W,1);
+u_ind = 1:N;
+u_ind(l_ind) = [];
+y(u_ind) = 0;
+Y = bsxfun(@(x,y)x==y,y,[1,-1]);
+M = diag(1./sqrt(sum(W,2)));
+S = M*W*M;
+F = (eye(N)-alpha*S)\Y;
+prediction = (F(:,1)-F(:,2))./(F(:,1)+F(:,2));
+
+end
